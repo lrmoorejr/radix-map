@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y ninja-build
+          git clone --branch v3.7.1 --depth 1 https://github.com/catchorg/Catch2.git /tmp/Catch2
+          cmake -S /tmp/Catch2 -B /tmp/Catch2/build -DBUILD_TESTING=OFF
+          sudo cmake --build /tmp/Catch2/build --target install
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja catch2
+
+      - name: Configure
+        run: cmake -B build -G Ninja
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure

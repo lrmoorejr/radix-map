@@ -1,0 +1,11 @@
+build/
+build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+.cmake/
+RadixMap-test
+.DS_Store
+.vscode/
+.idea/
