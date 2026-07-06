@@ -46,7 +46,10 @@
 	#if !defined(COMMONS_ENSURE_HPP) && !defined(ensure)
 		#define ensure(condition, ...) assert((condition))
 	#endif
-	#ifndef COMMONS_ENSURE_HPP
+	// A second guard (distinct from COMMONS_ENSURE_HPP) covers the case where two
+	// headers using this same standalone fallback are included together.
+	#if !defined(COMMONS_ENSURE_HPP) && !defined(COMMONS_THROW_IF_FALLBACK_DEFINED)
+	#define COMMONS_THROW_IF_FALLBACK_DEFINED
 	template<class T, class... Args>
 	constexpr inline void throw_if(bool condition, Args&&... args) {
 		if (condition)
