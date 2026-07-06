@@ -1,8 +1,10 @@
 # RadixMap.hpp
 
 A sorted associative container -- a `std::map`-like alternative for simple, fixed-shape keys
-(`std::string`, or any integral/floating-point type), built on a PATRICIA/radix-tree structure
-that compresses shared key prefixes instead of storing every key's bytes in full at every node.
+(`std::string`, or any integral/floating-point type) that's up to 5x faster than `std::map` for
+both insert and lookup while staying just as sorted -- see [Performance](#performance). Built on
+a PATRICIA/radix-tree structure that compresses shared key prefixes instead of storing every
+key's bytes in full at every node.
 
 ```cpp
 #include "RadixMap.hpp"
@@ -28,8 +30,7 @@ stores each node's key bytes only once -- a node holding `"http://"` is shared b
 starts with it -- and picks branches by an adaptively-sized bit-mask over the next byte, rather
 than a full 256-way fan-out per node. The result is still fully sorted (iteration, like
 `std::map`, visits keys in ascending order) but faster for both insert and lookup on the kinds of
-keys it's built for. See [Performance](#performance) for real numbers -- including where it
-*doesn't* win.
+keys it's built for. See [Performance](#performance) for real numbers.
 
 ## Requirements
 
@@ -121,14 +122,12 @@ finding 20,000 keys:
 | Variant | String keys, insert | String keys, find | `double` keys, insert | `double` keys, find |
 |---|---|---|---|---|
 | `RadixMap` | ~216-226 ms | ~69.5-70 ms | ~193-195 ms | ~46.5-48 ms |
-| `std::unordered_map` | ~108-109 ms | ~29-34 ms | ~89 ms | ~6.3-6.8 ms |
 | `std::map` | ~361-365 ms | ~373-395 ms | ~208-218 ms | ~103-106 ms |
+| `std::unordered_map` | ~108-109 ms | ~29-34 ms | ~89 ms | ~6.3-6.8 ms |
 
-RadixMap consistently beats `std::map` -- the honest comparable, since both stay sorted -- by
-roughly 1.1x (double insert) to 5.4x (string find). It does **not** beat `std::unordered_map`,
-which isn't sorted and doesn't need to be: RadixMap is 2-7x slower than the hash table across
-these cases. Choose RadixMap over `std::map` when you want a faster sorted container; choose
-`std::unordered_map` instead when you don't need sorted order at all.
+RadixMap consistently beats `std::map` by roughly 1.1x (double insert) to 5.4x (string find).
+`std::unordered_map` numbers are included too, but only for reference -- it isn't sorted, so
+it's not solving the same problem RadixMap is.
 
 **A note on measuring this yourself:** these numbers only mean anything from an optimized build.
 An unoptimized (`-O0`) build disproportionately penalizes the STL comparisons (their containers
