@@ -1,0 +1,30 @@
+# Minimal Doxygen config for RadixMap.hpp. Undocumented settings fall back to
+# Doxygen's built-in defaults -- see https://www.doxygen.nl/manual/config.html.
+
+PROJECT_NAME           = "RadixMap"
+PROJECT_BRIEF           = "A sorted, std::map-like associative container built on a PATRICIA/radix tree"
+
+OUTPUT_DIRECTORY       = docs
+INPUT                  = RadixMap.hpp README.md
+USE_MDFILE_AS_MAINPAGE = README.md
+
+RECURSIVE              = NO
+EXTRACT_ALL            = NO
+EXTRACT_PRIVATE        = NO
+EXTRACT_STATIC         = NO
+JAVADOC_AUTOBRIEF      = YES
+
+GENERATE_HTML          = YES
+HTML_OUTPUT            = html
+GENERATE_TREEVIEW      = YES
+DISABLE_INDEX          = NO
+FULL_PATH_NAMES        = NO
+SOURCE_BROWSER         = NO
+
+GENERATE_LATEX         = NO
+GENERATE_XML           = NO
+GENERATE_MAN           = NO
+GENERATE_RTF           = NO
+
+QUIET                  = NO
+WARN_IF_UNDOCUMENTED   = NO
