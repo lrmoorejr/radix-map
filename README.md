@@ -25,7 +25,7 @@ for(auto &&entry : ages)         // iterates in ascending key order
 ages.erase("Alice");
 ```
 
-## Why not just `std::map`?
+## Why not just std::map?
 
 `std::map` compares whole keys at every node on the way down a red-black tree. RadixMap instead
 stores each node's key bytes only once -- a node holding `"http://"` is shared by every key that
@@ -86,7 +86,7 @@ are treated as two distinct keys, unlike `std::map<double,...>` (whose default `
 treats them as equivalent). This is intentional, not a bug -- it falls directly out of the
 encoding scheme.
 
-## `erase()` is a tombstone
+## erase() is a tombstone
 
 `erase()` clears the entry's value in place but leaves the tree's internal structure (the
 compressed prefixes and branches) untouched -- it doesn't reclaim the compression a full
