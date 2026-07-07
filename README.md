@@ -1,5 +1,7 @@
 # RadixMap.hpp
 
+[API docs](https://lrmoorejr.github.io/radix-map/)
+
 A sorted associative container -- a `std::map`-like alternative for simple, fixed-shape keys
 (`std::string`, or any integral/floating-point type) that's up to 5x faster than `std::map` for
 both insert and lookup while staying just as sorted -- see [Performance](#performance). Built on
