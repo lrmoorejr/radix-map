@@ -18,8 +18,12 @@ GENERATE_HTML          = YES
 HTML_OUTPUT            = html
 GENERATE_TREEVIEW      = YES
 DISABLE_INDEX          = NO
+FULL_SIDEBAR           = NO
 FULL_PATH_NAMES        = NO
 SOURCE_BROWSER         = NO
+HTML_COLORSTYLE        = LIGHT
+HTML_EXTRA_STYLESHEET  = doxygen-awesome-css/doxygen-awesome.css \
+                         doxygen-awesome-css/doxygen-awesome-sidebar-only.css
 
 GENERATE_LATEX         = NO
 GENERATE_XML           = NO
