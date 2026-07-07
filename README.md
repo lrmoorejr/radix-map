@@ -138,4 +138,4 @@ one-sided picture. Always benchmark via a `CMAKE_BUILD_TYPE=Release` configure.
 
 ## License
 
-Apache License 2.0 -- see [LICENSE](LICENSE).
+Apache License 2.0 -- see [LICENSE](https://github.com/lrmoorejr/radix-map/blob/main/LICENSE).
