@@ -1001,7 +1001,7 @@ inline bool RadixMapNode<Value>::insert(const unsigned char *key, const int keyL
 	const unsigned char *subkeyPosition = subkey;
 	int subkeyIndex = 0;
 	int keyIndex = 0;
-	size_t subkeyLength = this->subkeyLength;
+	int subkeyLength = static_cast<int>(this->subkeyLength);
 
 tryNextNode:
 	while(subkeyIndex < subkeyLength && keyIndex < keyLength && subkeyPosition[subkeyIndex] == keyPosition[keyIndex]) {
