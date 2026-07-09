@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <random>
 #include <stdexcept>
@@ -162,6 +163,39 @@ TEST_CASE( "RadixMap<double,...> treats positive and negative zero as distinct k
 	CHECK(tree.at(-0.0) == "negzero");
 }
 
+TEST_CASE( "RadixMap<double,...> orders NaN keys by raw bit pattern, not IEEE-754 comparison semantics" ) {
+	// IEEE-754 says NaN is unordered and NaN != NaN, but RadixMap encodes by
+	// raw bits (see RadixMapKeyTraits's @note on NaN), so: identical-bit NaNs
+	// collide as one key, differing-bit NaNs (sign/signaling-vs-quiet/payload)
+	// are distinct keys, and sort order places negative NaNs below -infinity
+	// and positive NaNs above +infinity -- matching IEEE-754-2008's
+	// totalOrder predicate.
+	double qnan = std::numeric_limits<double>::quiet_NaN();
+	double qnanSameBits = std::numeric_limits<double>::quiet_NaN();
+	double snan = std::numeric_limits<double>::signaling_NaN();
+	double negNan = -std::numeric_limits<double>::quiet_NaN();
+	double posInf = std::numeric_limits<double>::infinity();
+	double negInf = -std::numeric_limits<double>::infinity();
+
+	RadixMap<double,std::string> tree;
+	tree.insert(qnan, "qnan-first");
+	tree.insert(qnanSameBits, "qnan-second"); // same bits as qnan -- overwrites, not a second key
+	CHECK(tree.size() == 1);
+	CHECK(tree.at(qnan) == "qnan-second");
+
+	tree.insert(snan, "snan");
+	tree.insert(negNan, "negnan");
+	tree.insert(posInf, "posinf");
+	tree.insert(negInf, "neginf");
+	tree.insert(0.0, "zero");
+	CHECK(tree.size() == 6);
+
+	std::vector<std::string> visited;
+	for(auto &&entry : tree)
+		visited.push_back(entry.second);
+	CHECK(visited == std::vector<std::string>{"negnan", "neginf", "zero", "posinf", "snan", "qnan-second"});
+}
+
 TEST_CASE( "signed integer keys sort correctly across negative, zero, and positive" ) {
 	RadixMap<int,std::string> tree;
 	tree.insert(3, "");
@@ -199,6 +233,24 @@ TEST_CASE( "single-byte integer keys (int8_t) sort correctly" ) {
 	CHECK(visited == std::vector<int8_t>{-5, 0, 120});
 }
 
+TEST_CASE( "single-byte integer keys (int8_t) sort correctly across every two's-complement value" ) {
+	// Exhaustive rather than sampled: inserts all 256 representable values, so
+	// a sign-flip bug at any boundary (INT8_MIN, the -1/0 crossing, INT8_MAX)
+	// can't hide between sample points the way a handful of scattered values
+	// could.
+	RadixMap<int8_t,int> tree;
+	for(int v = -128; v <= 127; ++v)
+		tree.insert(static_cast<int8_t>(v), v);
+	REQUIRE(tree.size() == 256);
+
+	std::vector<int8_t> visited;
+	for(auto &&entry : tree)
+		visited.push_back(entry.first);
+	REQUIRE(std::is_sorted(visited.begin(), visited.end()));
+	CHECK(visited.front() == std::numeric_limits<int8_t>::min());
+	CHECK(visited.back() == std::numeric_limits<int8_t>::max());
+}
+
 TEST_CASE( "two-byte integer keys (int16_t) sort correctly" ) {
 	RadixMap<int16_t,std::string> tree;
 	tree.insert(int16_t{-500}, "");
@@ -209,6 +261,168 @@ TEST_CASE( "two-byte integer keys (int16_t) sort correctly" ) {
 	for(auto it = tree.begin(); it != tree.end(); ++it)
 		visited.push_back(it->first);
 	CHECK(visited == std::vector<int16_t>{-500, 0, 3000});
+}
+
+TEST_CASE( "two-byte integer keys (int16_t) sort correctly across every two's-complement value" ) {
+	// Exhaustive, same reasoning as the int8_t version above -- cheap enough
+	// (65536 values) to just check them all rather than sample.
+	RadixMap<int16_t,int> tree;
+	for(int v = -32768; v <= 32767; ++v)
+		tree.insert(static_cast<int16_t>(v), v);
+	REQUIRE(tree.size() == 65536);
+
+	std::vector<int16_t> visited;
+	for(auto &&entry : tree)
+		visited.push_back(entry.first);
+	REQUIRE(std::is_sorted(visited.begin(), visited.end()));
+	CHECK(visited.front() == std::numeric_limits<int16_t>::min());
+	CHECK(visited.back() == std::numeric_limits<int16_t>::max());
+}
+
+TEST_CASE( "single-byte unsigned integer keys (uint8_t) sort correctly, including large values that would look negative if signed" ) {
+	RadixMap<uint8_t,std::string> tree;
+	tree.insert(uint8_t{200}, "");
+	tree.insert(uint8_t{5}, "");
+	tree.insert(uint8_t{0}, "");
+
+	std::vector<uint8_t> visited;
+	for(auto it = tree.begin(); it != tree.end(); ++it)
+		visited.push_back(it->first);
+	CHECK(visited == std::vector<uint8_t>{0, 5, 200});
+}
+
+TEST_CASE( "two-byte unsigned integer keys (uint16_t) sort correctly, including large values that would look negative if signed" ) {
+	RadixMap<uint16_t,std::string> tree;
+	tree.insert(uint16_t{60000}, "");
+	tree.insert(uint16_t{5}, "");
+	tree.insert(uint16_t{0}, "");
+
+	std::vector<uint16_t> visited;
+	for(auto it = tree.begin(); it != tree.end(); ++it)
+		visited.push_back(it->first);
+	CHECK(visited == std::vector<uint16_t>{0, 5, 60000});
+}
+
+TEST_CASE( "four-byte integer keys (int32_t) sort correctly" ) {
+	RadixMap<int32_t,std::string> tree;
+	tree.insert(int32_t{-2000000000}, "");
+	tree.insert(int32_t{2000000000}, "");
+	tree.insert(int32_t{0}, "");
+
+	std::vector<int32_t> visited;
+	for(auto it = tree.begin(); it != tree.end(); ++it)
+		visited.push_back(it->first);
+	CHECK(visited == std::vector<int32_t>{-2000000000, 0, 2000000000});
+}
+
+TEST_CASE( "four-byte integer keys (int32_t) sort correctly across two's-complement boundaries" ) {
+	// Too wide to enumerate exhaustively (unlike int8_t/int16_t above), so
+	// this densely samples around the three places a sign-flip bug would
+	// actually show up: INT32_MIN, the -1/0 crossing, and INT32_MAX.
+	RadixMap<int32_t,std::string> tree;
+	std::vector<int32_t> values = {
+		std::numeric_limits<int32_t>::min(), std::numeric_limits<int32_t>::min() + 1,
+		-2, -1, 0, 1, 2,
+		std::numeric_limits<int32_t>::max() - 1, std::numeric_limits<int32_t>::max()
+	};
+	for(int32_t v : values)
+		tree.insert(v, "");
+
+	std::vector<int32_t> visited;
+	for(auto &&entry : tree)
+		visited.push_back(entry.first);
+	std::vector<int32_t> expected = values;
+	std::sort(expected.begin(), expected.end());
+	CHECK(visited == expected);
+}
+
+TEST_CASE( "four-byte unsigned integer keys (uint32_t) sort correctly, including large values that would look negative if signed" ) {
+	RadixMap<uint32_t,std::string> tree;
+	tree.insert(uint32_t{4000000000u}, "");
+	tree.insert(uint32_t{5u}, "");
+	tree.insert(uint32_t{0u}, "");
+
+	std::vector<uint32_t> visited;
+	for(auto it = tree.begin(); it != tree.end(); ++it)
+		visited.push_back(it->first);
+	CHECK(visited == std::vector<uint32_t>{0u, 5u, 4000000000u});
+}
+
+TEST_CASE( "eight-byte integer keys (int64_t) sort correctly" ) {
+	RadixMap<int64_t,std::string> tree;
+	tree.insert(int64_t{-9000000000000000000LL}, "");
+	tree.insert(int64_t{9000000000000000000LL}, "");
+	tree.insert(int64_t{0}, "");
+
+	std::vector<int64_t> visited;
+	for(auto it = tree.begin(); it != tree.end(); ++it)
+		visited.push_back(it->first);
+	CHECK(visited == std::vector<int64_t>{-9000000000000000000LL, 0, 9000000000000000000LL});
+}
+
+TEST_CASE( "eight-byte integer keys (int64_t) sort correctly across two's-complement boundaries" ) {
+	// Same reasoning as the int32_t version above: densely samples the
+	// boundary regions (INT64_MIN, the -1/0 crossing, INT64_MAX) rather than
+	// enumerating the whole range.
+	RadixMap<int64_t,std::string> tree;
+	std::vector<int64_t> values = {
+		std::numeric_limits<int64_t>::min(), std::numeric_limits<int64_t>::min() + 1,
+		-2, -1, 0, 1, 2,
+		std::numeric_limits<int64_t>::max() - 1, std::numeric_limits<int64_t>::max()
+	};
+	for(int64_t v : values)
+		tree.insert(v, "");
+
+	std::vector<int64_t> visited;
+	for(auto &&entry : tree)
+		visited.push_back(entry.first);
+	std::vector<int64_t> expected = values;
+	std::sort(expected.begin(), expected.end());
+	CHECK(visited == expected);
+}
+
+TEST_CASE( "eight-byte unsigned integer keys (uint64_t) sort correctly, including large values that would look negative if signed" ) {
+	RadixMap<uint64_t,std::string> tree;
+	tree.insert(uint64_t{18000000000000000000ULL}, "");
+	tree.insert(uint64_t{5ULL}, "");
+	tree.insert(uint64_t{0ULL}, "");
+
+	std::vector<uint64_t> visited;
+	for(auto it = tree.begin(); it != tree.end(); ++it)
+		visited.push_back(it->first);
+	CHECK(visited == std::vector<uint64_t>{0ULL, 5ULL, 18000000000000000000ULL});
+}
+
+TEST_CASE( "float keys round-trip and sort correctly across negative, zero, and positive values" ) {
+	RadixMap<float,std::string> tree;
+	tree.insert(0.0f, "");
+	tree.insert(1.5f, "");
+	tree.insert(-1.5f, "");
+	tree.insert(100.0f, "");
+	tree.insert(-100.0f, "");
+	CHECK(tree.contains(0.0f));
+	CHECK(tree.contains(1.5f));
+	CHECK(tree.contains(-1.5f));
+	CHECK(tree.contains(100.0f));
+	CHECK(tree.contains(-100.0f));
+	CHECK_FALSE(tree.contains(2.5f));
+
+	std::vector<float> visited;
+	for(auto it = tree.begin(); it != tree.end(); ++it)
+		visited.push_back(it->first);
+	CHECK(visited == std::vector<float>{-100.0f, -1.5f, 0.0f, 1.5f, 100.0f});
+}
+
+TEST_CASE( "float keys treat positive and negative zero as distinct keys" ) {
+	// Same intentional divergence from std::map<float,...> as the double case
+	// above -- see "RadixMap<double,...> treats positive and negative zero as
+	// distinct keys" for the reasoning (falls out of encoding by raw bits).
+	RadixMap<float,std::string> tree;
+	tree.insert(0.0f, "poszero");
+	tree.insert(-0.0f, "negzero");
+	CHECK(tree.size() == 2);
+	CHECK(tree.at(0.0f) == "poszero");
+	CHECK(tree.at(-0.0f) == "negzero");
 }
 
 TEST_CASE( "an empty string is a valid key, distinct from never having been inserted" ) {
