@@ -20,7 +20,7 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wpedantic -Werror")
 
 find_package(Catch2 3 REQUIRED)
 
-add_executable(RadixMap-test RadixMap-test.cpp RadixMap.hpp)
+add_executable(RadixMap-test RadixMap-test.cpp RadixMap.hpp BoundedVector.hpp)
 target_link_libraries(RadixMap-test PRIVATE Catch2::Catch2WithMain)
 
 enable_testing()

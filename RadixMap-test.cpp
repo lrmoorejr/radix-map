@@ -14,6 +14,12 @@
  * limitations under the License.
  */
 
+// Opts into RadixMap's test-only structural self-check (see the
+// RADIXMAP_ENABLE_INVARIANT_CHECKS comment near the top of RadixMap.hpp) --
+// must be defined before RadixMap.hpp is included. Library users never
+// define this, so they never pay for it, even in their own debug builds.
+#define RADIXMAP_ENABLE_INVARIANT_CHECKS
+
 #include <algorithm>
 #include <cstdint>
 #include <map>
@@ -242,6 +248,184 @@ TEST_CASE( "find returns an iterator to the entry, or end() if not found" ) {
 	CHECK(tree.find("nope") == tree.end());
 }
 
+TEST_CASE( "lower_bound/upper_bound on an empty tree return end()" ) {
+	RadixMap<std::string,std::string> tree;
+	CHECK(tree.lower_bound("anything") == tree.end());
+	CHECK(tree.upper_bound("anything") == tree.end());
+}
+
+TEST_CASE( "lower_bound finds an exact match; upper_bound skips past it" ) {
+	RadixMap<std::string,std::string> tree;
+	tree.insert("b", "1");
+
+	auto lb = tree.lower_bound("b");
+	REQUIRE(lb != tree.end());
+	CHECK(lb->first == "b");
+
+	CHECK(tree.upper_bound("b") == tree.end());
+}
+
+TEST_CASE( "lower_bound/upper_bound on a key between two entries both land on the next entry" ) {
+	RadixMap<std::string,std::string> tree;
+	tree.insert("apple", "1");
+	tree.insert("cherry", "2");
+
+	auto lb = tree.lower_bound("banana");
+	REQUIRE(lb != tree.end());
+	CHECK(lb->first == "cherry");
+
+	auto ub = tree.upper_bound("banana");
+	REQUIRE(ub != tree.end());
+	CHECK(ub->first == "cherry");
+}
+
+TEST_CASE( "lower_bound/upper_bound past the last entry return end()" ) {
+	RadixMap<std::string,std::string> tree;
+	tree.insert("apple", "1");
+	tree.insert("banana", "2");
+
+	CHECK(tree.lower_bound("zebra") == tree.end());
+	CHECK(tree.upper_bound("zebra") == tree.end());
+}
+
+TEST_CASE( "lower_bound/upper_bound before the first entry both land on begin()" ) {
+	RadixMap<std::string,std::string> tree;
+	tree.insert("apple", "1");
+	tree.insert("banana", "2");
+
+	auto lb = tree.lower_bound("aardvark");
+	REQUIRE(lb != tree.end());
+	CHECK(lb->first == "apple");
+
+	auto ub = tree.upper_bound("aardvark");
+	REQUIRE(ub != tree.end());
+	CHECK(ub->first == "apple");
+}
+
+TEST_CASE( "lower_bound/upper_bound distinguish a key that is a prefix of another, stored key" ) {
+	// "cat" and "catalog" both hold values, so lower_bound("cat") must land
+	// on "cat" itself while upper_bound("cat") must skip past it to
+	// "catalog" -- exercising the exact-length-match branch in boundImpl.
+	RadixMap<std::string,std::string> tree;
+	tree.insert("cat", "1");
+	tree.insert("catalog", "2");
+
+	auto lb = tree.lower_bound("cat");
+	REQUIRE(lb != tree.end());
+	CHECK(lb->first == "cat");
+
+	auto ub = tree.upper_bound("cat");
+	REQUIRE(ub != tree.end());
+	CHECK(ub->first == "catalog");
+}
+
+TEST_CASE( "lower_bound on a key shorter than any stored key, but a shared prefix, lands on the first extension" ) {
+	// "cat" was never inserted (only "catalog" was), so both bounds must
+	// skip past the structural branch-point node and land on the first real
+	// entry underneath it.
+	RadixMap<std::string,std::string> tree;
+	tree.insert("catalog", "1");
+	tree.insert("catapult", "2");
+
+	auto lb = tree.lower_bound("cat");
+	REQUIRE(lb != tree.end());
+	CHECK(lb->first == "catalog");
+
+	auto ub = tree.upper_bound("cat");
+	REQUIRE(ub != tree.end());
+	CHECK(ub->first == "catalog");
+}
+
+TEST_CASE( "lower_bound/upper_bound land correctly when the query diverges mid-branch" ) {
+	// "banana"/"bandana"/"bandit" all share "ban", then "bandana"/"bandit"
+	// further share "band" before diverging at 'a' vs 'i'. A query of
+	// "bandage" walks down to the "bandana" leaf's own subkey ("ana", the
+	// remainder after "band") and diverges from it mid-subkey ('n' vs 'g',
+	// deep inside a single node rather than at a branch point), which sorts
+	// "bandage" just before "bandana": banana < bandage < bandana < bandit.
+	RadixMap<std::string,std::string> tree;
+	tree.insert("banana", "1");
+	tree.insert("bandana", "2");
+	tree.insert("bandit", "3");
+
+	auto lb = tree.lower_bound("bandage");
+	REQUIRE(lb != tree.end());
+	CHECK(lb->first == "bandana");
+}
+
+TEST_CASE( "lower_bound/upper_bound match std::map across random string keys" ) {
+	auto strings = makeRandomStrings(2000);
+
+	RadixMap<std::string,int> tree;
+	std::map<std::string,int> reference;
+	for(size_t i = 0; i < strings.size(); ++i) {
+		tree.insert(strings[i], static_cast<int>(i));
+		reference[strings[i]] = static_cast<int>(i);
+	}
+
+	// Query with both inserted keys and never-inserted probes so the
+	// comparison exercises exact matches, in-between misses, and out-of-range
+	// queries alike.
+	auto probes = makeRandomStrings(500);
+	for(const std::string &probe : {strings.front(), strings.back()})
+		probes.push_back(probe);
+
+	for(const std::string &probe : probes) {
+		auto refLower = reference.lower_bound(probe);
+		auto lower = tree.lower_bound(probe);
+		if(refLower == reference.end())
+			CHECK(lower == tree.end());
+		else {
+			REQUIRE(lower != tree.end());
+			CHECK(lower->first == refLower->first);
+		}
+
+		auto refUpper = reference.upper_bound(probe);
+		auto upper = tree.upper_bound(probe);
+		if(refUpper == reference.end())
+			CHECK(upper == tree.end());
+		else {
+			REQUIRE(upper != tree.end());
+			CHECK(upper->first == refUpper->first);
+		}
+	}
+}
+
+TEST_CASE( "lower_bound/upper_bound match std::map across random double keys" ) {
+	auto doubles = makeRandomDoubles(2000);
+
+	RadixMap<double,int> tree;
+	std::map<double,int> reference;
+	for(size_t i = 0; i < doubles.size(); ++i) {
+		tree.insert(doubles[i], static_cast<int>(i));
+		reference[doubles[i]] = static_cast<int>(i);
+	}
+
+	std::mt19937 generator(2);
+	std::uniform_real_distribution<double> probeValue(-1e6, 1e6);
+	for(int i = 0; i < 500; ++i) {
+		double probe = probeValue(generator);
+
+		auto refLower = reference.lower_bound(probe);
+		auto lower = tree.lower_bound(probe);
+		if(refLower == reference.end())
+			CHECK(lower == tree.end());
+		else {
+			REQUIRE(lower != tree.end());
+			CHECK(lower->first == refLower->first);
+		}
+
+		auto refUpper = reference.upper_bound(probe);
+		auto upper = tree.upper_bound(probe);
+		if(refUpper == reference.end())
+			CHECK(upper == tree.end());
+		else {
+			REQUIRE(upper != tree.end());
+			CHECK(upper->first == refUpper->first);
+		}
+	}
+}
+
 TEST_CASE( "at returns the value or throws std::out_of_range" ) {
 	RadixMap<std::string,std::string> tree;
 	tree.insert("hello", "world");
@@ -316,6 +500,162 @@ TEST_CASE( "range-for iteration over string keys visits every entry in ascending
 	std::vector<std::string> sortedKeys = keys;
 	std::sort(sortedKeys.begin(), sortedKeys.end());
 	CHECK(visited == sortedKeys);
+}
+
+TEST_CASE( "a branch byte landing in an empty slot outside the current mask's range does not break sort order" ) {
+	// Regression test for a bug caught by lower_bound/upper_bound fuzzing
+	// against std::map: 'a' (0x61), 'e' (0x65), 'l' (0x6C) only differ in
+	// their low nibble, so after three inserts the root's branch mask
+	// narrowed to 0xF (low nibble only). 't' (0x74) then arrived: its low
+	// nibble (0x4) mapped to an empty slot, so insert() claimed it directly
+	// without ever checking that 't's high nibble (0x7) put it outside the
+	// range the mask had been derived from -- landing it between 'a' and 'e'
+	// in the branch array when it actually sorts after all three. Nothing
+	// afterward recomputes the mask unless a later key collides with an
+	// already-occupied slot, so the corruption was permanent and silent:
+	// plain forward iteration (not just lower_bound/upper_bound) visited
+	// entries out of order.
+	RadixMap<std::string,int> tree;
+	std::vector<std::string> keys = {"lmijlf", "aqbmhngzsufsulko", "exxjrxawnjjhwzbariy", "tpkzihdgvrzdey"};
+	for(size_t i = 0; i < keys.size(); ++i)
+		tree.insert(keys[i], static_cast<int>(i));
+
+	std::vector<std::string> visited;
+	for(auto &&entry : tree)
+		visited.push_back(entry.first);
+
+	std::vector<std::string> sortedKeys = keys;
+	std::sort(sortedKeys.begin(), sortedKeys.end());
+	CHECK(visited == sortedKeys);
+}
+
+TEST_CASE( "forward iteration over many random string keys stays in ascending order, matching std::map" ) {
+	auto strings = makeRandomStrings(5000);
+
+	RadixMap<std::string,int> tree;
+	std::map<std::string,int> reference;
+	for(size_t i = 0; i < strings.size(); ++i) {
+		tree.insert(strings[i], static_cast<int>(i));
+		reference[strings[i]] = static_cast<int>(i);
+	}
+
+	std::vector<std::string> visited;
+	for(auto &&entry : tree)
+		visited.push_back(entry.first);
+
+	std::vector<std::string> referenceOrder;
+	for(auto &entry : reference)
+		referenceOrder.push_back(entry.first);
+
+	REQUIRE(std::is_sorted(visited.begin(), visited.end()));
+	CHECK(visited == referenceOrder);
+}
+
+TEST_CASE( "forward iteration over many random double keys stays in ascending order, matching std::map" ) {
+	auto doubles = makeRandomDoubles(5000);
+
+	RadixMap<double,int> tree;
+	std::map<double,int> reference;
+	for(size_t i = 0; i < doubles.size(); ++i) {
+		tree.insert(doubles[i], static_cast<int>(i));
+		reference[doubles[i]] = static_cast<int>(i);
+	}
+
+	std::vector<double> visited;
+	for(auto &&entry : tree)
+		visited.push_back(entry.first);
+
+	std::vector<double> referenceOrder;
+	for(auto &entry : reference)
+		referenceOrder.push_back(entry.first);
+
+	REQUIRE(std::is_sorted(visited.begin(), visited.end()));
+	CHECK(visited == referenceOrder);
+}
+
+TEST_CASE( "iteration handles a maximum-depth tree for an 8-byte fixed-length key" ) {
+	// Guards the iterator's traversal-buffer capacity bound for fixed-length
+	// keys. For an 8-byte key the deepest possible root-to-leaf path is 9
+	// nodes (root + one node per key byte), which is exactly the capacity the
+	// iterator reserves. This constructs that worst case on purpose: the keys
+	// 0 and 1<<(8*i) for i in [0,8) branch at a different byte position each,
+	// building an 8-deep spine down to key 0 (a 9th node). If the capacity
+	// bound were even one too small, a heap-free BoundedVector traversal would
+	// throw std::length_error here rather than silently pass. Uses uint64_t so
+	// the encoded bytes are directly controllable (big-endian, no float
+	// transform).
+	RadixMap<uint64_t,int> tree;
+	std::map<uint64_t,int> reference;
+	tree.insert(0, 0);
+	reference[0] = 0;
+	for(int i = 0; i < 8; ++i) {
+		uint64_t key = uint64_t{1} << (8 * i);
+		tree.insert(key, i + 1);
+		reference[key] = i + 1;
+	}
+
+	std::vector<uint64_t> visited;
+	for(auto &&entry : tree)
+		visited.push_back(entry.first);
+
+	std::vector<uint64_t> referenceOrder;
+	for(auto &entry : reference)
+		referenceOrder.push_back(entry.first);
+
+	REQUIRE(std::is_sorted(visited.begin(), visited.end()));
+	CHECK(visited == referenceOrder);
+
+	// Also exercise find()/lower_bound() landing on the deepest leaf (key 0),
+	// which reconstructs a full-depth traversal stack.
+	auto found = tree.find(0);
+	REQUIRE(found != tree.end());
+	CHECK(found->first == 0);
+	auto lb = tree.lower_bound(0);
+	REQUIRE(lb != tree.end());
+	CHECK(lb->first == 0);
+}
+
+TEST_CASE( "checkInvariants() holds after every insert, across many random string keys" ) {
+	// Calls checkInvariants() after each insert rather than just once at the
+	// end, so a corrupting insert (like the empty-slot mask bug it exists to
+	// catch) is caught at the exact call that caused it.
+	auto strings = makeRandomStrings(1500);
+
+	RadixMap<std::string,int> tree;
+	for(size_t i = 0; i < strings.size(); ++i) {
+		tree.insert(strings[i], static_cast<int>(i));
+		tree.checkInvariants();
+	}
+}
+
+TEST_CASE( "checkInvariants() holds after every insert, across many random double keys" ) {
+	auto doubles = makeRandomDoubles(1500);
+
+	RadixMap<double,int> tree;
+	for(size_t i = 0; i < doubles.size(); ++i) {
+		tree.insert(doubles[i], static_cast<int>(i));
+		tree.checkInvariants();
+	}
+}
+
+TEST_CASE( "checkInvariants() holds regardless of insertion order" ) {
+	// RadixMap's shape (and so the invariants checkInvariants() verifies) is
+	// insertion-order-dependent -- the empty-slot mask bug this checker
+	// exists to catch only manifested for one specific arrival order of its
+	// four keys. Re-insert the same key set under several random shuffles to
+	// cover more of that order-dependent space than any one fixed dataset can.
+	auto strings = makeRandomStrings(400);
+
+	std::mt19937 shuffler(7);
+	for(int trial = 0; trial < 20; ++trial) {
+		std::shuffle(strings.begin(), strings.end(), shuffler);
+
+		RadixMap<std::string,int> tree;
+		for(size_t i = 0; i < strings.size(); ++i) {
+			tree.insert(strings[i], static_cast<int>(i));
+			tree.checkInvariants();
+		}
+	}
 }
 
 TEST_CASE( "mutating a value through an iterator is visible via at()" ) {
@@ -639,6 +979,55 @@ TEST_CASE( "RadixMap<double,...> vs std::map vs std::unordered_map: double key f
 		size_t found = 0;
 		for(double key : keys)
 			found += orderedMap.find(key) != orderedMap.end();
+		return found;
+	};
+}
+
+TEST_CASE( "RadixMap::find()/lower_bound() string vs double keys, with BoundedVector vendored", "[.][benchmark]" ) {
+	// contains()/at()/operator[] (benchmarked above) go through locate(), which
+	// never allocates regardless of Key -- they don't exercise the
+	// BoundedVector-backed iterator at all. find()/lower_bound()/upper_bound()
+	// do: they build a resumable IteratorImpl, whose traversal-state buffers are
+	// heap-free BoundedVector for a fixed-length Key (e.g. double) and
+	// std::vector for a variable-length one (e.g. std::string) -- see
+	// RADIXMAP_HAVE_BOUNDED_VECTOR near the top of RadixMap.hpp. This benchmark
+	// isolates that difference directly, string vs double, side by side.
+	const std::vector<std::string> stringKeys = makeRandomStrings(SampleCount);
+	const std::vector<double> doubleKeys = makeRandomDoubles(SampleCount);
+
+	RadixMap<std::string,std::string> stringMap;
+	for(const std::string &key : stringKeys)
+		stringMap.insert(key, "");
+
+	RadixMap<double,std::string> doubleMap;
+	for(double key : doubleKeys)
+		doubleMap.insert(key, "");
+
+	BENCHMARK("RadixMap<string> find()") {
+		size_t found = 0;
+		for(const std::string &key : stringKeys)
+			found += stringMap.find(key) != stringMap.end();
+		return found;
+	};
+
+	BENCHMARK("RadixMap<double> find()") {
+		size_t found = 0;
+		for(double key : doubleKeys)
+			found += doubleMap.find(key) != doubleMap.end();
+		return found;
+	};
+
+	BENCHMARK("RadixMap<string> lower_bound()") {
+		size_t found = 0;
+		for(const std::string &key : stringKeys)
+			found += stringMap.lower_bound(key) != stringMap.end();
+		return found;
+	};
+
+	BENCHMARK("RadixMap<double> lower_bound()") {
+		size_t found = 0;
+		for(double key : doubleKeys)
+			found += doubleMap.lower_bound(key) != doubleMap.end();
 		return found;
 	};
 }

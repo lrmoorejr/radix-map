@@ -37,13 +37,18 @@ keys it's built for. See [Performance](#performance) for real numbers.
 ## Requirements
 
 - C++20 or later
-- Header-only -- copy `RadixMap.hpp` into your project and `#include` it
+- Header-only -- copy `RadixMap.hpp` and [`BoundedVector.hpp`](https://github.com/lrmoorejr/bounded-vector)
+  (vendored alongside it in this repo) into your project and `#include "RadixMap.hpp"`
 - `Key` must have a `RadixMapKeyTraits<Key>` specialization; built in for `std::string` and any
   integral/floating-point type (see [Custom key types](#custom-key-types) to add your own)
 - `Value` must be copy-constructible (for `insert()`) and default-constructible (for
   `operator[]`, matching `std::map::operator[]`'s own requirement)
 - Optional: [`Ensure.hpp`](https://github.com/lrmoorejr/ensure) for its `throw_if()` helper; if
   it's not present, RadixMap falls back to an equivalent local implementation
+
+`BoundedVector.hpp` is what makes iteration (`begin()`/`find()`/`lower_bound()`/`upper_bound()`)
+over a fixed-length `Key` (any integral/floating-point type) fully heap-allocation-free -- see
+[Performance](#performance).
 
 ## API
 
@@ -58,6 +63,8 @@ keys it's built for. See [Performance](#performance) for real numbers.
 | `size()`, `empty()` | Current entry count, and whether it's 0. |
 | `begin()`, `end()`, `cbegin()`, `cend()` | Forward iteration in ascending key order. See [Iterating](#iterating) for a range-for gotcha. |
 | `find(key)` | Returns an iterator to `key`'s entry, or `end()`. |
+| `lower_bound(key)` | Returns an iterator to the first entry `>= key`, or `end()`. |
+| `upper_bound(key)` | Returns an iterator to the first entry `> key`, or `end()`. |
 | Copy/move construction and assignment | Copying deep-clones the whole tree; moving is cheap (pointer swap). |
 
 ## Custom key types
@@ -119,17 +126,49 @@ tree has no parent pointers to walk backwards through.
 
 Measured with Catch2's benchmark harness (Release build, `-O3`; see `RadixMap-test.cpp`'s hidden
 `[benchmark]`-tagged test cases -- run them with `./RadixMap-test "[benchmark]"`), inserting/
-finding 20,000 keys:
+finding 20,000 keys. Speedup vs `std::map`:
 
-| Variant | String keys, insert | String keys, find | `double` keys, insert | `double` keys, find |
+| Operation | RadixMap vs `std::map` |
+|---|---|
+| String keys, insert | 3.2x faster |
+| String keys, `contains()` | 5.4x faster |
+| `double` keys, insert | 2.2x faster |
+| `double` keys, `contains()` | 2.3x faster |
+
+Full numbers, plus `std::unordered_map` for reference (it isn't sorted, so it's not solving the
+same problem RadixMap is):
+
+| Variant | String keys, insert | String keys, `contains()` | `double` keys, insert | `double` keys, `contains()` |
 |---|---|---|---|---|
-| `RadixMap` | ~216-226 ms | ~69.5-70 ms | ~193-195 ms | ~46.5-48 ms |
-| `std::map` | ~361-365 ms | ~373-395 ms | ~208-218 ms | ~103-106 ms |
-| `std::unordered_map` | ~108-109 ms | ~29-34 ms | ~89 ms | ~6.3-6.8 ms |
+| `RadixMap` | ~111-118 ms | ~70-73 ms | ~101-104 ms | ~46-47 ms |
+| `std::map` | ~366-369 ms | ~379-407 ms | ~215-234 ms | ~100-109 ms |
+| `std::unordered_map` | ~110-119 ms | ~27-29 ms | ~88-89 ms | ~6.8-7.1 ms |
 
-RadixMap consistently beats `std::map` by roughly 1.1x (double insert) to 5.4x (string find).
-`std::unordered_map` numbers are included too, but only for reference -- it isn't sorted, so
-it's not solving the same problem RadixMap is.
+`contains()`/`at()`/`operator[]` return a bare `bool`/reference from a raw pointer-chase and never
+allocate, regardless of `Key`. `find()`/`lower_bound()`/`upper_bound()` do more: each returns a
+resumable iterator, so it has to decode the key and build a traversal stack on the way down, not
+just answer yes/no -- so they cost more than `contains()`, by design, even in the best case. If
+all you need is a yes/no or a value lookup, prefer `contains()`/`at()`/`operator[]`; reach for
+`find()`/`lower_bound()`/`upper_bound()` when you actually need the resulting position (e.g. to
+iterate onward from it, or because you need the first-`>=`/first-`>` semantics they alone provide).
+
+On top of that fixed cost, `find()`/`lower_bound()`/`upper_bound()`'s traversal-stack storage is
+heap-free (backed by the vendored `BoundedVector`) for a fixed-length `Key` like `double`, and
+`std::vector`-backed for a variable-length one like `std::string` -- shrinking, but not
+eliminating, their gap over `contains()` for `double` specifically. Measured (20,000 keys):
+
+| | `contains()` | `find()` | `lower_bound()` |
+|---|---|---|---|
+| String keys | ~70-73 ms | ~452-461 ms | ~595-629 ms |
+| `double` keys | ~46-47 ms | ~57-60 ms | ~460-480 ms |
+
+For `double`, `find()` is only ~1.3x the cost of `contains()` -- the heap-free traversal state
+closes most of the gap. For `std::string`, which can't use it, `find()` costs ~6.4x `contains()`.
+`lower_bound()` costs more than `find()` for both key types regardless of allocation, since it
+does genuinely more tree-descent/branch-scanning work per call; comparing `double` to
+`std::string` within each column instead (not across the `contains()`/`find()`/`lower_bound()`
+divide), `double`'s `find()` is still about 7.8x faster than `std::string`'s, and its
+`lower_bound()` about 1.3x faster.
 
 **A note on measuring this yourself:** these numbers only mean anything from an optimized build.
 An unoptimized (`-O0`) build disproportionately penalizes the STL comparisons (their containers
