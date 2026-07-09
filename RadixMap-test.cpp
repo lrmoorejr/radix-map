@@ -640,6 +640,186 @@ TEST_CASE( "lower_bound/upper_bound match std::map across random double keys" ) 
 	}
 }
 
+TEST_CASE( "prefix_range on an empty tree is empty" ) {
+	RadixMap<std::string,std::string> tree;
+	auto range = tree.prefix_range("any");
+	CHECK(range.begin() == range.end());
+}
+
+TEST_CASE( "prefix_range with an empty prefix visits every entry, same as begin()/end()" ) {
+	RadixMap<std::string,std::string> tree;
+	tree.insert("banana", "1");
+	tree.insert("apple", "2");
+	tree.insert("cherry", "3");
+
+	std::vector<std::string> visited;
+	for(auto &&entry : tree.prefix_range(""))
+		visited.push_back(entry.first);
+	CHECK(visited == std::vector<std::string>{"apple", "banana", "cherry"});
+}
+
+TEST_CASE( "prefix_range on a prefix that lands on a valueless structural branch-point visits both children" ) {
+	// "apple"/"apply" share "appl", which was never itself inserted -- so this
+	// exercises the same branch-point shape as the "find does not match a
+	// structural branch-point" regression test above, but for prefix_range()
+	// rather than contains().
+	RadixMap<std::string,std::string> tree;
+	tree.insert("apple", "1");
+	tree.insert("apply", "2");
+	tree.insert("banana", "3");
+
+	std::vector<std::string> visited;
+	for(auto &&entry : tree.prefix_range("appl"))
+		visited.push_back(entry.first);
+	CHECK(visited == std::vector<std::string>{"apple", "apply"});
+}
+
+TEST_CASE( "prefix_range on a prefix that is itself a stored key includes that key first" ) {
+	RadixMap<std::string,std::string> tree;
+	tree.insert("cat", "1");
+	tree.insert("catalog", "2");
+	tree.insert("catapult", "3");
+	tree.insert("dog", "4");
+
+	std::vector<std::string> visited;
+	for(auto &&entry : tree.prefix_range("cat"))
+		visited.push_back(entry.first);
+	CHECK(visited == std::vector<std::string>{"cat", "catalog", "catapult"});
+}
+
+TEST_CASE( "prefix_range on a prefix shorter than any stored key still bounds the subtree correctly" ) {
+	// "ban"/"band"/"bandana"/"bandit" all share "ban" as a strict prefix, and
+	// "banana" ends inside that same node's subkey ("ana") rather than at a
+	// branch point -- both must be included, nothing outside "ban*" may leak
+	// in from a sibling subtree.
+	RadixMap<std::string,std::string> tree;
+	std::vector<std::string> keys = {"banana", "band", "bandana", "bandit", "can", "cannon"};
+	for(const std::string &key : keys)
+		tree.insert(key, key);
+
+	std::vector<std::string> visited;
+	for(auto &&entry : tree.prefix_range("ban"))
+		visited.push_back(entry.first);
+	CHECK(visited == std::vector<std::string>{"banana", "band", "bandana", "bandit"});
+}
+
+TEST_CASE( "prefix_range excludes a sibling subtree that only shares a shorter prefix" ) {
+	RadixMap<std::string,std::string> tree;
+	tree.insert("apple", "1");
+	tree.insert("apply", "2");
+	tree.insert("banana", "3");
+
+	std::vector<std::string> visited;
+	for(auto &&entry : tree.prefix_range("app"))
+		visited.push_back(entry.first);
+	CHECK(visited == std::vector<std::string>{"apple", "apply"});
+}
+
+TEST_CASE( "prefix_range diverging mid-subkey returns empty" ) {
+	// "appl" is a real node (branch-point for apple/apply), but "apz" diverges
+	// from it inside the subkey itself ('p' vs 'z' at the 3rd byte), not at a
+	// branch -- must return empty, not fall through to some unrelated subtree.
+	RadixMap<std::string,std::string> tree;
+	tree.insert("apple", "1");
+	tree.insert("apply", "2");
+
+	auto range = tree.prefix_range("apz");
+	CHECK(range.begin() == range.end());
+}
+
+TEST_CASE( "prefix_range longer than any matching key returns empty" ) {
+	RadixMap<std::string,std::string> tree;
+	tree.insert("apple", "1");
+	tree.insert("apply", "2");
+
+	auto range = tree.prefix_range("apples");
+	CHECK(range.begin() == range.end());
+}
+
+TEST_CASE( "prefix_range on a prefix matching no key at all returns empty" ) {
+	RadixMap<std::string,std::string> tree;
+	tree.insert("apple", "1");
+
+	auto range = tree.prefix_range("zzz");
+	CHECK(range.begin() == range.end());
+}
+
+TEST_CASE( "prefix_range skips an erased key within the range but keeps others" ) {
+	RadixMap<std::string,std::string> tree;
+	tree.insert("apple", "1");
+	tree.insert("apply", "2");
+	tree.insert("banana", "3");
+
+	tree.erase("apple");
+
+	std::vector<std::string> visited;
+	for(auto &&entry : tree.prefix_range("app"))
+		visited.push_back(entry.first);
+	CHECK(visited == std::vector<std::string>{"apply"});
+}
+
+TEST_CASE( "prefix_range mutating a value through the range is visible via at()" ) {
+	RadixMap<std::string,std::string> tree;
+	tree.insert("apple", "1");
+	tree.insert("apply", "2");
+
+	for(auto &&entry : tree.prefix_range("app"))
+		entry.second += "-touched";
+
+	CHECK(tree.at("apple") == "1-touched");
+	CHECK(tree.at("apply") == "2-touched");
+}
+
+TEST_CASE( "const_iterator: prefix_range works through a const reference" ) {
+	RadixMap<std::string,std::string> tree;
+	tree.insert("apple", "1");
+	tree.insert("apply", "2");
+	tree.insert("banana", "3");
+
+	const RadixMap<std::string,std::string> &constTree = tree;
+
+	std::vector<std::string> visited;
+	for(auto &&entry : constTree.prefix_range("app"))
+		visited.push_back(entry.first);
+	CHECK(visited == std::vector<std::string>{"apple", "apply"});
+}
+
+TEST_CASE( "prefix_range matches a linear starts_with scan across random string keys and prefixes" ) {
+	auto strings = makeRandomStrings(2000);
+
+	RadixMap<std::string,int> tree;
+	for(size_t i = 0; i < strings.size(); ++i)
+		tree.insert(strings[i], static_cast<int>(i));
+
+	// Prefixes drawn from real keys (truncated to a random length, so they're
+	// guaranteed to match at least one key) plus fresh random strings (which
+	// usually won't match anything) -- exercises both the common and the
+	// empty-range path.
+	std::mt19937 generator(3);
+	std::uniform_int_distribution<size_t> keyPick(0, strings.size() - 1);
+	std::vector<std::string> prefixes = makeRandomStrings(300);
+	for(int i = 0; i < 300; ++i) {
+		const std::string &source = strings[keyPick(generator)];
+		std::uniform_int_distribution<size_t> lengthPick(0, source.size());
+		prefixes.push_back(source.substr(0, lengthPick(generator)));
+	}
+
+	for(const std::string &prefix : prefixes) {
+		std::vector<std::string> expected;
+		for(const std::string &key : strings)
+			if(key.starts_with(prefix))
+				expected.push_back(key);
+		std::sort(expected.begin(), expected.end());
+		expected.erase(std::unique(expected.begin(), expected.end()), expected.end());
+
+		std::vector<std::string> actual;
+		for(auto &&entry : tree.prefix_range(prefix))
+			actual.push_back(entry.first);
+
+		CHECK(actual == expected);
+	}
+}
+
 TEST_CASE( "at returns the value or throws std::out_of_range" ) {
 	RadixMap<std::string,std::string> tree;
 	tree.insert("hello", "world");

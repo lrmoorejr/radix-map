@@ -967,9 +967,16 @@ class RadixMap final {
 				// order (pre-order over the tree: a node's own value -- if any -- sorts
 				// before all of its branches, and branch index order already matches
 				// ascending byte order per RadixMapNode's own mask/shift scheme).
-				// Returns nullptr once the traversal is exhausted.
+				// Returns nullptr once the traversal is exhausted -- or, for a
+				// prefix_range() iterator, once it has backtracked out of the
+				// prefix subtree entirely (see `floor`'s doc comment below).
 				RadixMapNode<Value>* stepToNextValue() noexcept {
-					while(!stack.empty()) {
+					// static_cast: BoundedVector::size() returns short (its
+					// capacities are always small), std::vector::size() returns
+					// size_t -- match floor's type (size_t) rather than floor's,
+					// since a stack this deep would already have overflowed a
+					// short-capacitied BoundedVector long before this compare.
+					while(static_cast<size_t>(stack.size()) >= floor) {
 						Frame &top = stack.back();
 						if(top.nextStep == -1) {
 							top.nextStep = 0;
@@ -1000,9 +1007,54 @@ class RadixMap final {
 					return nullptr;
 				}
 
+				// Lower bound (inclusive) on stack.size() below which
+				// stepToNextValue() must stop rather than backtrack further.
+				// Every ordinary iterator (begin()/find()/lower_bound()/
+				// upper_bound()) leaves this at its default, 1 -- and
+				// `stack.size() >= 1` is exactly `!stack.empty()` for an
+				// unsigned size, so their behavior is unchanged. prefix_range()
+				// is the only caller that raises it: once the prefix node
+				// itself has been popped back off the stack, everything left
+				// belongs to an ancestor's unrelated sibling, not the prefix's
+				// own subtree, so backtracking must stop there instead of
+				// continuing to end().
+				size_t floor = 1;
+
 				StackContainer stack;
 				PathContainer pathBytes;
 				RadixMapNode<Value>* current = nullptr;
+		};
+
+		/**
+		 * @brief Range returned by prefix_range() -- every entry whose key
+		 * starts with a given prefix, in ascending order.
+		 *
+		 * A minimal begin()/end() wrapper around IteratorImpl so
+		 * `for(auto&& e : map.prefix_range(prefix))` reads naturally; not
+		 * intended to be named directly (returned by prefix_range() via
+		 * `auto`). Its end() is a plain default-constructed IteratorImpl --
+		 * the same end() sentinel used everywhere else in this class --
+		 * because IteratorImpl's own `floor` (see its doc comment) already
+		 * makes begin()'s iterator stop there on its own once incremented
+		 * past the last entry in the prefix's subtree.
+		 *
+		 * @tparam IsConst True for a range of const_iterator, false for iterator.
+		 */
+		template<bool IsConst>
+		class PrefixRange final {
+			public:
+				/// The iterator type this range yields; `iterator` or `const_iterator`.
+				using Iterator = IteratorImpl<IsConst>;
+
+				/// @brief Iterator to the first entry with the queried prefix, or end() if none.
+				inline Iterator begin() const noexcept { return first; }
+
+				/// @brief Iterator one past the last entry with the queried prefix.
+				inline Iterator end() const noexcept { return Iterator{}; }
+
+			private:
+				friend class RadixMap;
+				Iterator first;
 		};
 
 		/// Mutable iterator; `Entry::second` is `Value&`. See IteratorImpl.
@@ -1121,6 +1173,40 @@ class RadixMap final {
 		 * none.
 		 */
 		inline const_iterator upper_bound(const Key& key) const noexcept { return boundImpl<true, true>(key); }
+
+		/**
+		 * @brief Returns a range over every entry whose key starts with
+		 * `prefix`, in ascending order.
+		 *
+		 * A single top-down descent (cost bounded by `prefix`'s length x
+		 * branch fan-out, not entry count) locates the node that roots every
+		 * matching entry, then the returned range walks that subtree only --
+		 * not the rest of the tree. `std::map` has no equivalent: faking this
+		 * with `lower_bound`/`upper_bound` there needs a hand-constructed
+		 * upper bound (e.g. incrementing `prefix`'s last byte), which has no
+		 * valid answer when `prefix` ends in `0xFF`.
+		 *
+		 * A prefix only has meaning for a `Key` type where a shorter value is
+		 * itself a valid `Key` -- true for `std::string` (this method's
+		 * primary use case), not for a fixed-width type like `double` (there's
+		 * no way to express "the leading 3 bytes of a double" as a `Key`). For
+		 * those, `prefix_range(x)` still compiles and runs, but degenerates to
+		 * at most a single entry, same as `find(x)`.
+		 *
+		 * @param prefix Prefix to search for.
+		 * @return Mutable range over every entry starting with `prefix`, empty
+		 * if none match.
+		 */
+		inline PrefixRange<false> prefix_range(const Key& prefix) noexcept { return prefixRangeImpl<false>(prefix); }
+
+		/**
+		 * @brief const overload of prefix_range().
+		 *
+		 * @param prefix Prefix to search for.
+		 * @return Read-only range over every entry starting with `prefix`,
+		 * empty if none match.
+		 */
+		inline PrefixRange<true> prefix_range(const Key& prefix) const noexcept { return prefixRangeImpl<true>(prefix); }
 
 	private:
 		// Shared by contains()/at()/operator[], which just need a value pointer,
@@ -1284,6 +1370,67 @@ class RadixMap final {
 
 			it.current = it.stepToNextValue();
 			return it;
+		}
+
+		// Shared by both prefix_range() overloads. Descends toward the node
+		// whose accumulated subkey exactly finishes consuming prefix's encoded
+		// bytes -- the node that roots every entry starting with prefix -- then
+		// returns a range over that subtree. Structurally the same mask/shift
+		// descent findImpl() uses above (a branch picked by mask/shift is only
+		// trusted once the *next* loop iteration's memcmp confirms it, exactly
+		// as findImpl() relies on), but the stopping condition differs: findImpl
+		// requires the whole key to be consumed AND a value at that exact node;
+		// this stops as soon as prefix itself is consumed, value or not, since a
+		// prefix's own node is frequently a structural branch-point with no
+		// value of its own (e.g. "appl" over "apple"/"apply").
+		template<bool IsConst>
+		PrefixRange<IsConst> prefixRangeImpl(const Key& prefix) const noexcept {
+			if(root == nullptr)
+				return PrefixRange<IsConst>{};
+
+			auto encoded = RadixMapKeyTraits<Key>::encode(prefix);
+			const unsigned char* ks = encoded.data();
+			size_t remaining = encoded.size();
+
+			IteratorImpl<IsConst> it;
+			RadixMapNode<Value>* n = root.get();
+			it.pushNode(n);
+
+			while(true) {
+				size_t subkeyLen = n->subkeyLength;
+				size_t common = std::min(subkeyLen, remaining);
+				if(memcmp(n->subkey, ks, common) != 0)
+					return PrefixRange<IsConst>{};
+
+				if(remaining <= subkeyLen) {
+					// prefix is fully consumed by this node's own subkey -- this
+					// node roots every matching entry. nextStep is still -1 from
+					// pushNode(), so stepToNextValue() checks this node's own
+					// value first, same as a begin()-driven traversal starting
+					// here would. floor pins backtracking to this node's depth,
+					// so the walk stops the moment it would leave this subtree.
+					it.floor = it.stack.size();
+					it.current = it.stepToNextValue();
+					PrefixRange<IsConst> range;
+					range.first = it;
+					return range;
+				}
+
+				ks += subkeyLen;
+				remaining -= subkeyLen;
+
+				if(n->branchCount == 0)
+					return PrefixRange<IsConst>{};
+
+				int index = (*ks & n->mask) >> n->shift;
+				RadixMapNode<Value>* child = n->branches[index];
+				if(!child)
+					return PrefixRange<IsConst>{};
+
+				it.stack.back().nextStep = index + 1;
+				n = child;
+				it.pushNode(n);
+			}
 		}
 
 		// Declared before root so that on destruction root (the unique_ptr) is

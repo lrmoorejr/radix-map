@@ -3,7 +3,7 @@
 [API docs](https://lrmoorejr.github.io/radix-map/)
 
 A sorted associative container -- a `std::map`-like alternative for simple, fixed-shape keys
-(`std::string`, or any integral/floating-point type) that's up to 5x faster than `std::map` for
+(`std::string`, or any integral/floating-point type) that's **up to 5x faster than `std::map`** for
 both insert and lookup while staying just as sorted -- see [Performance](#performance). Built on
 a PATRICIA/radix-tree structure that compresses shared key prefixes instead of storing every
 key's bytes in full at every node.
@@ -23,6 +23,15 @@ for(auto &&entry : ages)         // iterates in ascending key order
 	std::cout << entry.first << " = " << entry.second << "\n";
 
 ages.erase("Alice");
+```
+
+That same prefix-compressed tree also answers a query `std::map` has no clean way to express: every
+key that starts with a given prefix, in one bounded descent rather than a linear scan (see
+[Prefix search](#prefix-search)).
+
+```cpp
+for(auto &&[key, value] : ages.prefix_range("A"))  // just "Alice"
+	std::cout << key << " = " << value << "\n";
 ```
 
 ## Why not just std::map?
@@ -65,6 +74,7 @@ over a fixed-length `Key` (any integral/floating-point type) fully heap-allocati
 | `find(key)` | Returns an iterator to `key`'s entry, or `end()`. |
 | `lower_bound(key)` | Returns an iterator to the first entry `>= key`, or `end()`. |
 | `upper_bound(key)` | Returns an iterator to the first entry `> key`, or `end()`. |
+| `prefix_range(prefix)` | Returns a range over every entry whose key starts with `prefix`, in ascending order; empty (not an error) if none match. See [Prefix search](#prefix-search). |
 | Copy/move construction and assignment | Copying deep-clones the whole tree; moving is cheap (pointer swap). |
 
 ## Custom key types
@@ -121,6 +131,35 @@ works identically regardless of which of the first two forms you use.
 
 Iteration is forward-only -- there's no `operator--`/`rbegin()`/`rend()` -- since the underlying
 tree has no parent pointers to walk backwards through.
+
+## Prefix search
+
+`prefix_range(prefix)` returns every entry whose key starts with `prefix`, in ascending order:
+
+```cpp
+RadixMap<std::string, Endpoint> routes;
+routes.insert("/api/users/list", ...);
+routes.insert("/api/users/get",  ...);
+routes.insert("/api/orders/list", ...);
+
+for(auto &&[key, endpoint] : routes.prefix_range("/api/users/"))
+    handle(key, endpoint); // visits "/api/users/get", "/api/users/list" -- nothing under /api/orders/
+```
+
+`std::map` has no clean equivalent: the usual workaround is calling `lower_bound(prefix)` for the
+start and hand-constructing an upper bound by incrementing `prefix`'s last byte, which has no
+valid answer when `prefix` ends in `0xFF`. RadixMap doesn't need the trick -- every prefix that
+was ever a branch point between two or more keys already has its own node, so `prefix_range()` is
+one descent to locate it (cost bounded by `prefix`'s length, not the map's size) followed by
+walking exactly that subtree.
+
+An empty prefix matches every entry (equivalent to `begin()`/`end()`), and a prefix matching
+nothing returns an empty range rather than an error.
+
+A prefix only means something for a `Key` type where a shorter value is itself a valid `Key` --
+true for `std::string`, not for a fixed-width type like `double` (there's no way to express "the
+leading 3 bytes of a double" as a `Key`). `prefix_range()` still compiles and runs for those, but
+degenerates to at most a single entry, the same as `find()`.
 
 ## Performance
 
