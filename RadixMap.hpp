@@ -493,6 +493,17 @@ concept RadixMapArithmeticKey = std::is_integral_v<Key> || std::is_floating_poin
  * treated as two distinct keys, unlike `std::map<double,...>` (whose default
  * `std::less` treats them as equivalent). This falls directly out of encoding
  * by raw bits and is intentional, not a bug.
+ *
+ * @note `NaN` keys are well-defined, not undefined behavior, but follow this
+ * same raw-bit ordering rather than IEEE-754 comparison semantics (where NaN
+ * is unordered and `NaN != NaN`): two NaNs with identical bits are the same
+ * key, and any two NaNs with different bits (signaling vs. quiet, differing
+ * payload, or differing sign) are distinct keys, ordered like every other key
+ * by their encoded bytes. Concretely, this places negative NaNs below
+ * `-infinity` (the smallest keys) and positive NaNs above `+infinity` (the
+ * largest keys) -- the same total order IEEE-754-2008's `totalOrder`
+ * predicate defines, and a direct consequence of encoding by raw bits rather
+ * than a special case.
  */
 template<RadixMapArithmeticKey Key>
 struct RadixMapKeyTraits<Key> {
